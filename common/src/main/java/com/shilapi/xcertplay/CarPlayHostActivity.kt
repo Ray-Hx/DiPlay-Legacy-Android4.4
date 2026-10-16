@@ -843,28 +843,8 @@ class CarPlayHostActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
 
-    private fun requiredWirelessPermissions(): List<String> {
-        val needsWifiRuntimePermission = wirelessHotspotMode != WirelessHotspotMode.MANUAL &&
-            wirelessHotspotMode != WirelessHotspotMode.EXISTING_WIFI
-        return when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> buildList {
-                add(Manifest.permission.BLUETOOTH_CONNECT)
-                if (needsWifiRuntimePermission) add(Manifest.permission.NEARBY_WIFI_DEVICES)
-            }
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> buildList {
-                add(Manifest.permission.BLUETOOTH_CONNECT)
-                if (needsWifiRuntimePermission) {
-                    add(Manifest.permission.ACCESS_COARSE_LOCATION)
-                    add(Manifest.permission.ACCESS_FINE_LOCATION)
-                }
-            }
-            realSdkInt() >= Build.VERSION_CODES.M && needsWifiRuntimePermission -> listOf(
-                Manifest.permission.ACCESS_COARSE_LOCATION,
-                Manifest.permission.ACCESS_FINE_LOCATION,
-            )
-            else -> emptyList()
-        }
-    }
+    private fun requiredWirelessPermissions(): List<String> =
+        WirelessPermissions.required(wirelessHotspotMode, realSdkInt())
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)

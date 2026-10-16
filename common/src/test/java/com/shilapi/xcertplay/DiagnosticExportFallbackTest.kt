@@ -69,7 +69,8 @@ class DiagnosticExportFallbackTest {
         val copy = File(usb, "DiPlay-test-usb.txt")
         assertTrue(copy.isFile)
         assertEquals(content, copy.readText(Charsets.UTF_8))
-        assertEquals(listOf(copy.absolutePath), saved.copyPaths)
+        // The exporter canonicalizes the selected root (/var is /private/var on macOS).
+        assertEquals(listOf(copy.canonicalPath), saved.copyPaths)
         assertFalse(File(usb, "DiPlay").exists())
         assertEquals(content, read(saved.uri))
     }
