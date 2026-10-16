@@ -63,11 +63,59 @@ class T3LegacyRuntimeTest {
                 }
                 instrumentation.waitForIdleSync()
                 assertFalse(activity.isFinishing)
-                // Compact screens show category links on Overview rather than a persistent rail.
-                instrumentation.runOnMainSync { activity.onBackPressed() }
+                // Only compact layouts need Back to expose category links again. On the
+                // wide A800 layout Back leaves Settings, while the persistent rail stays usable.
+                instrumentation.runOnMainSync {
+                    val visibleTitles = texts(activity.window.decorView).map { it.text.toString() }
+                    if (!titles.all { it in visibleTitles }) activity.onBackPressed()
+                }
                 instrumentation.waitForIdleSync()
             }
         } finally { instrumentation.runOnMainSync { activity.finish() } }
+    }
+
+    @Test fun wirelessBackportPermissionsKeepKitKatOnInstallTimeGrants() {
+        val type = Class.forName("com.shilapi.xcertplay.WirelessPermissions")
+        val policy = type.getField("INSTANCE").get(null)
+        val required = type.getMethod("required",
+            com.shilapi.xcertplay.orchestration.WirelessHotspotMode::class.java, Int::class.javaPrimitiveType)
+        for (mode in com.shilapi.xcertplay.orchestration.WirelessHotspotMode.values()) {
+            assertEquals("API 19 mode=$mode", emptyList<String>(), required.invoke(policy, mode, 19))
+            val modern = required.invoke(policy, mode, 37) as List<*>
+            assertTrue(modern.contains("android.permission.ACCESS_LOCAL_NETWORK"))
+        }
+    }
+
+    @Test fun wirelessAddressRecoverySwitchesFamiliesOnDalvik() {
+        // These shared-module helpers are internal to Kotlin, but their real bytecode must
+        // verify and run on API 19. Reflect rather than duplicate their implementation here.
+        val ipv4 = InetAddress.getByName("192.168.43.1")
+        val ipv6 = java.net.Inet6Address.getByAddress(null,
+            InetAddress.getByName("fe80::1234").address, 7)
+        var live: List<InetAddress> = listOf(ipv4)
+        var now = 0L
+        val sample: () -> List<InetAddress> = { live }
+        val cancelled: () -> Boolean = { false }
+        val pause: (Long) -> Unit = { delay -> now += delay; live = listOf(ipv4, ipv6) }
+        val clock: () -> Long = { now }
+        val log: (String) -> Unit = {}
+        val type = Class.forName("com.shilapi.xcertplay.network.HotspotAddressRecovery")
+        val recovery = type.declaredConstructors.single { it.parameterTypes.size == 5 }
+            .newInstance(sample, cancelled, pause, clock, log)
+        val await = type.getMethod("awaitCandidates", List::class.java, String::class.java, Long::class.javaPrimitiveType)
+        val nextFamily = type.getMethod("nextFamily", InetAddress::class.java)
+        val policyType = Class.forName("com.shilapi.xcertplay.network.HotspotAddressPolicy")
+        val policy = policyType.getField("INSTANCE").get(null)
+        val select = policyType.getMethod("select", List::class.java, String::class.java)
+        assertEquals(ipv4, select.invoke(policy, await.invoke(recovery, live, null, 15000L), null))
+        assertNull(nextFamily.invoke(recovery, ipv4))
+        live = listOf(ipv4, ipv6)
+        assertEquals("IPv6", nextFamily.invoke(recovery, ipv4))
+        live = listOf(ipv4)
+        val candidates = await.invoke(recovery, live, "IPv6", 15000L)
+        assertEquals(250L, now)
+        assertEquals(ipv6, select.invoke(policy, candidates, "IPv6"))
+        assertEquals("IPv4", nextFamily.invoke(recovery, ipv6))
     }
 
     @Test fun nativeTunBlockingUsesAuthorizedFdOnKitKat() {

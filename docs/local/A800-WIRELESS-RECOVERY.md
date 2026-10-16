@@ -66,4 +66,4 @@ Full AGENTS.md task list: **BUILD SUCCESSFUL**, 3m 7s, after the macOS-only test
 Mobile, Home and MapHost Debug assemble and lint all passed. Lint retains existing warnings; error counts are zero.
 The separately run real-source network/JUnit subset passed 37 tests. The full Gradle run includes the four wireless permission tests and the 11 address recovery tests.
 
-No runtime authentication files or release signing keys were added. No APK was installed on the car; iPhone 7 device acceptance remains pending.
+No runtime authentication files or release signing keys were committed. No APK was installed on the car; iPhone 7 device acceptance remains pending. The follow-up [API 19 emulator report](API19-EMULATOR-VALIDATION.md) records the locally provisioned standalone Debug run, its individual passing checks and the same-process lwIP limitation.
