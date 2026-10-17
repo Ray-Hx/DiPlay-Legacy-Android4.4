@@ -1,3 +1,5 @@
+> **A800 / Android 4.4 无线连接修复分支**：修改内容、适用用户、实车反馈、安装方法及限制见 [详细中文说明](README-A800.zh-CN.md)。本分支的测试 APK 为独立 Debug 包，不是上游正式签名版。
+
 # DiPlay Legacy Android (中文版)
 
 [简体中文](README.zh-CN.md) · [English](README.md)
