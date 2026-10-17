@@ -1,6 +1,6 @@
 # A800 已验证测试包
 
-[下载 APK](https://github.com/Ray-Hx/DiPlay-Legacy-A800/raw/refs/heads/main/downloads/DiPlay-A800-wireless-test.apk) · [详细修改与适用说明](../README-A800.zh-CN.md)
+[下载 APK](https://github.com/Ray-Hx/DiPlay-Legacy-Android4.4/raw/refs/heads/main/downloads/DiPlay-A800-wireless-test.apk) · [详细修改与适用说明](../README-A800.zh-CN.md)
 
 这是用户在 A800 Android 4.4.2 / iPhone 7 iOS 15.8.8 上反馈有效的原始独立 Debug 测试包，未重新构建或签名。包名 `com.shihab.diplay.hudtest`，版本 `0.2.68-hud-test`，可与原版共存。源码功能提交为 `f05d198ea6157e420c8739410a8a861ac735ac15`；后续仅增加分发及说明文件。该 Debug APK 不含内嵌 Git revision 元数据，不能使用正式 Release 的元数据校验流程。
 
