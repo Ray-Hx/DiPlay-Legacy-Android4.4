@@ -43,6 +43,10 @@
 
 ## 测试版安装与使用
 
+**[下载已实测测试 APK](https://github.com/Ray-Hx/DiPlay-Legacy-A800/raw/refs/heads/main/downloads/DiPlay-A800-wireless-test.apk)** · [SHA-256 校验文件](downloads/DiPlay-A800-wireless-test.apk.sha256)
+
+本仓库按测试用户要求公开发布此已验证文件；未重新打包或签名。它作为仓库下载文件提供，不是新构建的正式 Release。
+
 本次有效 APK 是 **Debug 独立测试包**，不是原作者签名的正式版本：
 
 - 版本：`0.2.68-hud-test`，versionCode `88`。
