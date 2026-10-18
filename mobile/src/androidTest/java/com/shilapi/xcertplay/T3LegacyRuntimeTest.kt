@@ -40,6 +40,36 @@ class T3LegacyRuntimeTest {
     private val instrumentation get() = InstrumentationRegistry.getInstrumentation()
     private val context get() = instrumentation.targetContext
 
+    @Test fun mdnsCanShareSystemPortAndPublishTxtOnKitKat() {
+        val type = context.classLoader.loadClass("com.shilapi.xcertplay.network.KitKatMdnsSocket")
+        val constructor = type.getConstructor(java.net.SocketAddress::class.java)
+        val first = constructor.newInstance(InetSocketAddress(0)) as java.net.MulticastSocket
+        try {
+            val second = constructor.newInstance(InetSocketAddress(first.localPort)) as java.net.MulticastSocket
+            second.use { assertEquals(first.localPort, it.localPort); assertTrue(it.reuseAddress) }
+        } finally { first.close() }
+        // Exercise the patched third-party call site, not just the helper constructor.
+        val iface = java.net.NetworkInterface.getNetworkInterfaces().toList().firstOrNull {
+            it.isUp && !it.isLoopback && it.inetAddresses.toList().any { a -> a is java.net.Inet4Address }
+        } ?: throw AssertionError("No active IPv4 interface")
+        val host = iface.inetAddresses.toList().first { it is java.net.Inet4Address }
+        val dnsType = context.classLoader.loadClass("javax.jmdns.JmDNS")
+        val infoType = context.classLoader.loadClass("javax.jmdns.ServiceInfo")
+        val dns = dnsType.getMethod("create", InetAddress::class.java, String::class.java)
+            .invoke(null, host, "diplay-kitkat-runtime-test")
+        try {
+            val socket = dns.javaClass.getMethod("getSocket").invoke(dns)
+            assertEquals(type, socket.javaClass)
+            val info = infoType.getMethod("create", String::class.java, String::class.java,
+                Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Map::class.java)
+                .invoke(null, "_diplay-test._tcp.local.", "DiPlay runtime test", 17000, 0, 0,
+                    mapOf("features" to "0x123", "model" to "runtime-test"))
+            dnsType.getMethod("registerService", infoType).invoke(dns, info)
+            assertEquals("0x123", infoType.getMethod("getPropertyString", String::class.java).invoke(info, "features"))
+            assertTrue((infoType.getMethod("getTextBytes").invoke(info) as ByteArray).isNotEmpty())
+        } finally { dnsType.getMethod("close").invoke(dns) }
+    }
+
     @Test fun settingsOpensEveryDriverCategoryOnKitKat() {
         val activity = instrumentation.startActivitySync(Intent(context, DiPlayActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

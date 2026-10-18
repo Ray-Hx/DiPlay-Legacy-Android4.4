@@ -1,0 +1,83 @@
+buildscript {
+    repositories { mavenCentral() }
+    dependencies { classpath 'org.ow2.asm:asm:9.7.1' }
+}
+
+import org.objectweb.asm.ClassReader
+import org.objectweb.asm.ClassVisitor
+import org.objectweb.asm.ClassWriter
+import org.objectweb.asm.MethodVisitor
+import org.objectweb.asm.Opcodes
+import java.security.MessageDigest
+import java.util.zip.ZipFile
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+
+/** Keep the pinned JmDNS code; replace only its multicast socket construction. */
+abstract class PatchKitKatJmDns extends DefaultTask {
+    @InputFile @PathSensitive(PathSensitivity.NONE) abstract RegularFileProperty getOriginalJar()
+    @OutputFile abstract RegularFileProperty getPatchedJar()
+
+    @TaskAction void patch() {
+        File original = originalJar.get().asFile
+        String digest = MessageDigest.getInstance('SHA-256').digest(original.bytes).encodeHex().toString()
+        if (digest != '6b6eb1623cb1d9e51467312ea62c567da005c2aa5a95347f566a11b8703c0ef1') {
+            throw new GradleException('JmDNS 3.6.3 input changed; re-audit the KitKat socket patch')
+        }
+        int[] edits = [0, 0] as int[]
+        File output = patchedJar.get().asFile
+        output.parentFile.mkdirs()
+        new ZipFile(original).withCloseable { zip ->
+            new ZipOutputStream(new FileOutputStream(output)).withCloseable { dest ->
+                zip.entries().each { entry ->
+                    byte[] bytes = zip.getInputStream(entry).withCloseable { it.bytes }
+                    if (entry.name == 'javax/jmdns/impl/JmDNSImpl.class') {
+                        def writer = new ClassWriter(0)
+                        new ClassReader(bytes).accept(new ClassVisitor(Opcodes.ASM9, writer) {
+                            @Override MethodVisitor visitMethod(int access, String name, String descriptor, String signature, String[] exceptions) {
+                                def delegate = super.visitMethod(access, name, descriptor, signature, exceptions)
+                                if (name != 'openMulticastSocket') return delegate
+                                return new MethodVisitor(Opcodes.ASM9, delegate) {
+                                    @Override void visitTypeInsn(int opcode, String type) {
+                                        if (opcode == Opcodes.NEW && type == 'java/net/MulticastSocket') {
+                                            edits[0]++
+                                            type = 'com/shilapi/xcertplay/network/KitKatMdnsSocket'
+                                        }
+                                        super.visitTypeInsn(opcode, type)
+                                    }
+                                    @Override void visitMethodInsn(int opcode, String owner, String method, String desc, boolean isInterface) {
+                                        if (opcode == Opcodes.INVOKESPECIAL && owner == 'java/net/MulticastSocket' && method == '<init>' && desc == '(Ljava/net/SocketAddress;)V') {
+                                            edits[1]++
+                                            owner = 'com/shilapi/xcertplay/network/KitKatMdnsSocket'
+                                        }
+                                        super.visitMethodInsn(opcode, owner, method, desc, isInterface)
+                                    }
+                                }
+                            }
+                        }, 0)
+                        bytes = writer.toByteArray()
+                    }
+                    def copy = new ZipEntry(entry.name)
+                    copy.time = 0L
+                    dest.putNextEntry(copy)
+                    if (!entry.directory) dest.write(bytes)
+                    dest.closeEntry()
+                }
+            }
+        }
+        if (edits[0] != 1 || edits[1] != 1) {
+            output.delete()
+            throw new GradleException('Expected exactly one JmDNS socket allocation and constructor')
+        }
+    }
+}
+
+configurations.create('kitKatJmDnsOriginal') { transitive = false }
+dependencies.add('kitKatJmDnsOriginal', libs.jmdns)
+def patched = tasks.register('patchKitKatJmDns', PatchKitKatJmDns) {
+    originalJar.set(layout.file(configurations.kitKatJmDnsOriginal.elements.map { it.first().asFile }))
+    patchedJar.set(layout.buildDirectory.file('kitkat-jmdns/jmdns-3.6.3.jar'))
+}
+dependencies.add('implementation', files(patched.flatMap { it.patchedJar }))
+// Match the original 3.6.3 POM's sole runtime dependency.
+dependencies.add('implementation', 'org.slf4j:slf4j-api:2.0.7')

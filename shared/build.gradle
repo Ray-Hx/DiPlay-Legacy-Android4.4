@@ -47,7 +47,6 @@ dependencies {
     implementation libs.bouncycastle
     api 'org.conscrypt:conscrypt-android:2.5.2'
     testImplementation 'org.conscrypt:conscrypt-openjdk-uber:2.5.2'
-    implementation libs.jmdns
     testImplementation libs.junit
     testImplementation 'org.robolectric:robolectric:4.17'
 }
@@ -68,3 +67,6 @@ tasks.configureEach { task ->
         task.dependsOn(prepareLwipSources)
     }
 }
+
+// Port sharing must be enabled before bind on KitKat; preserve the pinned library otherwise.
+apply from: rootProject.file('gradle/jmdns-kitkat.gradle')
