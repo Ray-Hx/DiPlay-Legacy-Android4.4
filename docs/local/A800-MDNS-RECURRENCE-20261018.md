@@ -34,3 +34,9 @@ Validation results and hardware acceptance must be recorded after execution; a s
 - Actual A800 / API-19 instrumentation `mdnsCanShareSystemPortAndPublishTxtOnKitKat`: 1 test, zero failures, zero ignored. This includes port reuse, the real patched JmDNS factory, and synthetic service registration with TXT properties while the system daemon remains running.
 - Candidate APK SHA-256: `45806bb1a5a5562be55cc44e7a8e58bff8a577344cb1e47028cadc084a1a5327`.
 - iPhone session acceptance is still pending; this candidate has not been published to GitHub Releases.
+
+## Follow-up physical result
+
+iPhone 7 / iOS 15.8.8 still fails on mdns1. Phone-side logs confirm both IPv4 and IPv6 StartSession addresses were received. Safari can reach the car's `/info` port; this manual TCP probe is explicitly not a CarPlay session. Phone packet capture also contains complete AirPlay mDNS TXT/address records. These observations do not identify the remaining root cause.
+
+A same-Wi-Fi comparison with iPhone 16 Pro / iOS 27.0 on mdns1 succeeds: first IPv6 TCP at +0.77s, active AirPlay at +2.29s, first video frame at +3.04s after StartSession. The successful run also has bonjourAdded=0, bonjourResolved=0, connectProbes=0, so those counters alone are not a failure criterion. The user excludes built-in-hotspot testing; future investigation remains on Same LAN. Raw phone and car logs are local only.
