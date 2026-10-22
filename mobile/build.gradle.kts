@@ -57,7 +57,7 @@ android {
     buildTypes {
         debug {
             applicationIdSuffix = ".hudtest"
-            versionNameSuffix = "-hud-test-mdns1"
+            versionNameSuffix = "-a800-perf1"
         }
         release {
             optimization {

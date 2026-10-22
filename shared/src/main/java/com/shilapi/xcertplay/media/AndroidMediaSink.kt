@@ -793,6 +793,8 @@ private class VideoDecoder(
     private var resumedAtNanos = 0L
     private var lastQueuedLocalNanos = 0L
     private val queue = VideoDecodeQueue()
+    // Only the video worker dequeues output. Reuse this even during the 5 ms idle polling loop.
+    private val outputInfo = MediaCodec.BufferInfo()
     @Volatile private var running = true
     @Volatile private var decoder: MediaCodec? = null
     private var outputSurface: Surface? = surface
@@ -1224,12 +1226,15 @@ private class VideoDecoder(
         queuedPresentationUs.indices.firstOrNull { queuedPresentationUs[it] == presentationUs } ?: -1
 
     private fun drainOutput(codec: MediaCodec) {
-        val info = MediaCodec.BufferInfo()
+        val info = outputInfo
         while (running) {
             val index = codec.dequeueOutputBuffer(info, 0)
             when {
                 index == MediaCodec.INFO_TRY_AGAIN_LATER -> return
                 index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> logOutputFormat(codec.outputFormat)
+                // Surface decoding has no output ByteBuffer array to refresh. Keep draining instead
+                // of delaying the next available frame until another input or the poll timeout.
+                index == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> Unit
                 index >= 0 -> {
                     val render = outputSurface != null
                     // Parked output goes to the offscreen consumer: it keeps the codec's state, but it is
@@ -1373,6 +1378,12 @@ private class AudioRenderer(
     @Volatile private var running = true
     @Volatile private var started = false
     private var codec: MediaCodec? = null
+    // API 19 requires the legacy buffer-array API. Fetch once after start, then refresh
+    // output buffers only when the codec reports a change, as required by that API.
+    private var legacyAudioInputBuffers: Array<ByteBuffer>? = null
+    private var legacyAudioOutputBuffers: Array<ByteBuffer>? = null
+    private val audioBufferInfo = MediaCodec.BufferInfo()
+    private val aacHeader = ByteArray(MediaCodecSupport.ADTS_HEADER_BYTES)
     private var track: AudioTrack? = null
     private var pcm = ByteArray(64 * 1024)
     private var playbackStarted = false
@@ -1517,7 +1528,16 @@ private class AudioRenderer(
             MediaCodecStartup.create(
                 create = { diagnosticStage = "decoder-create"; MediaCodec.createDecoderByType(mime) },
                 configure = { diagnosticStage = "decoder-configure"; it.configure(mediaFormat, null, null, 0) },
-                start = { diagnosticStage = "decoder-start"; it.start() },
+                start = {
+                    diagnosticStage = "decoder-start"
+                    it.start()
+                    if (realSdkInt() < Build.VERSION_CODES.LOLLIPOP) {
+                        @Suppress("DEPRECATION")
+                        legacyAudioInputBuffers = it.inputBuffers
+                        @Suppress("DEPRECATION")
+                        legacyAudioOutputBuffers = it.outputBuffers
+                    }
+                },
                 release = { it.release() },
             ).also {
                 // A vendor name getter or diagnostic callback must not discard a started codec.
@@ -1529,6 +1549,8 @@ private class AudioRenderer(
             }
         } catch (error: Exception) {
             Log.e(TAG, "audio decoder configuration failed mime=$mime", error)
+            legacyAudioInputBuffers = null
+            legacyAudioOutputBuffers = null
             reportFailure(error)
             null
         }
@@ -1828,39 +1850,38 @@ private class AudioRenderer(
 
     private fun handle(packet: AudioPacket) {
         val rtp = packet.rtp
+        val payloadBytes = rtp.size - RTP_HEADER_BYTES
+        if (payloadBytes <= 0) return
         val timestampUs = sampleTimestampUs(packet.sample)
         when (format.codec) {
-            AudioCodecKind.LPCM -> writePcm(byteSwapS16(rtp.copyOfRange(12, rtp.size)))
+            AudioCodecKind.LPCM -> {
+                if (payloadBytes > pcm.size) pcm = ByteArray(payloadBytes)
+                Pcm16Payload.copyLittleEndian(rtp, RTP_HEADER_BYTES, payloadBytes, pcm)
+                writePcm(pcm, 0, payloadBytes)
+            }
             AudioCodecKind.AAC_LC -> {
-                val accessUnit = rtp.copyOfRange(12, rtp.size)
-                if (accessUnit.isNotEmpty()) {
-                    if (!firstAacPayloadLogged) {
-                        firstAacPayloadLogged = true
-                        Log.i(
-                            TAG,
-                            "audio AAC access unit bytes=${accessUnit.size}",
-                        )
-                    }
-                    feedCodec(
-                        MediaCodecSupport.adtsFrame(accessUnit, format.sampleRate, format.channels),
-                        timestampUs,
+                if (!firstAacPayloadLogged) {
+                    firstAacPayloadLogged = true
+                    Log.i(
+                        TAG,
+                        "audio AAC access unit bytes=$payloadBytes",
                     )
                 }
+                feedCodec(rtp, timestampUs, withAdts = true)
             }
             AudioCodecKind.OPUS -> {
-                val accessUnit = rtp.copyOfRange(12, rtp.size)
-                if (accessUnit.size < MIN_OPUS_PACKET_BYTES) {
+                if (payloadBytes < MIN_OPUS_PACKET_BYTES) {
                     shortOpusPackets++
                     if (!firstOpusShortPacketLogged) {
                         firstOpusShortPacketLogged = true
                         Log.i(
                             TAG,
-                            "audio Opus skipping short packet bytes=${accessUnit.size}",
+                            "audio Opus skipping short packet bytes=$payloadBytes",
                         )
                     }
                     return
                 }
-                feedCodec(accessUnit, timestampUs)
+                feedCodec(rtp, timestampUs)
             }
         }
     }
@@ -1868,8 +1889,10 @@ private class AudioRenderer(
     private fun sampleTimestampUs(sample: Int): Long =
         (sample.toLong() and 0xffff_ffffL) * 1_000_000L / format.sampleRate
 
-    private fun feedCodec(payload: ByteArray, presentationTimeUs: Long) {
+    private fun feedCodec(rtp: ByteArray, presentationTimeUs: Long, withAdts: Boolean = false) {
         val codec = codec ?: run { decoderUnavailablePackets++; return }
+        val payloadBytes = rtp.size - RTP_HEADER_BYTES
+        val inputBytes = payloadBytes + if (withAdts) aacHeader.size else 0
         diagnosticStage = "decoder-input"
         // Upstream #381: while a blocking track write holds this thread, decoded output fills
         // up and the decoder stops taking input. Dropping the packet after one 10 ms wait cut
@@ -1893,18 +1916,22 @@ private class AudioRenderer(
         val input = if (realSdkInt() >= Build.VERSION_CODES.LOLLIPOP) {
             codec.getInputBuffer(index)
         } else {
-            codec.inputBuffers[index]
+            legacyAudioInputBuffers?.get(index)
         } ?: return
         input.clear()
-        if (payload.size <= input.remaining()) {
-            input.put(payload)
-            codec.queueInputBuffer(index, 0, payload.size, presentationTimeUs, 0)
+        if (inputBytes <= input.remaining()) {
+            if (withAdts) {
+                MediaCodecSupport.writeAdtsHeader(aacHeader, payloadBytes, format.sampleRate, format.channels)
+                input.put(aacHeader)
+            }
+            input.put(rtp, RTP_HEADER_BYTES, payloadBytes)
+            codec.queueInputBuffer(index, 0, inputBytes, presentationTimeUs, 0)
             inputQueued++
             if (!firstInputQueuedLogged) {
                 firstInputQueuedLogged = true
                 Log.i(
                     TAG,
-                    "audio decoder first input codec=${format.codec} bytes=${payload.size}",
+                    "audio decoder first input codec=${format.codec} bytes=$inputBytes",
                 )
             }
         } else {
@@ -1916,12 +1943,18 @@ private class AudioRenderer(
 
     private fun drainCodec(codec: MediaCodec) {
         diagnosticStage = "decoder-output"
-        val info = MediaCodec.BufferInfo()
+        val info = audioBufferInfo
         while (running) {
             diagnosticStage = "decoder-output"
             val index = codec.dequeueOutputBuffer(info, 0)
             when {
                 index == MediaCodec.INFO_TRY_AGAIN_LATER -> return
+                index == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> {
+                    if (realSdkInt() < Build.VERSION_CODES.LOLLIPOP) {
+                        @Suppress("DEPRECATION")
+                        legacyAudioOutputBuffers = codec.outputBuffers
+                    }
+                }
                 index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                     // Vendor metadata inspection must not interrupt otherwise working playback.
                     if (decoderOutputReports < 4) runCatching {
@@ -1954,7 +1987,7 @@ private class AudioRenderer(
                         val output = if (realSdkInt() >= Build.VERSION_CODES.LOLLIPOP) {
                             codec.getOutputBuffer(index)
                         } else {
-                            codec.outputBuffers[index]
+                            legacyAudioOutputBuffers?.get(index)
                         }
                         if (output != null) {
                             if (size > pcm.size) pcm = ByteArray(size)
@@ -2146,20 +2179,13 @@ private class AudioRenderer(
         }
     }
 
-    private fun byteSwapS16(source: ByteArray): ByteArray {
-        for (index in 0 until source.size - 1 step 2) {
-            val tmp = source[index]
-            source[index] = source[index + 1]
-            source[index + 1] = tmp
-        }
-        return source
-    }
-
     @Synchronized
     private fun release() {
         abandonAudioFocus()
         val codec = codec
         this.codec = null
+        legacyAudioInputBuffers = null
+        legacyAudioOutputBuffers = null
         if (codec != null) {
             try {
                 codec.stop()
@@ -2210,6 +2236,7 @@ private class AudioRenderer(
         // AudioManager.STREAM_ACCESSIBILITY was added in API 26 (value 10). Keep compatibility for API < 26.
         const val STREAM_ACCESSIBILITY_COMPAT = 10
         const val AAC_OBJECT_TYPE_LC = 2
+        const val RTP_HEADER_BYTES = 12
         const val MIN_OPUS_PACKET_BYTES = 4
         const val OPUS_CODEC_DELAY_NANOS = 6_500_000L
         const val OPUS_SEEK_PRE_ROLL_NANOS = 80_000_000L

@@ -240,22 +240,32 @@ class T3LegacyRuntimeTest {
         val lines = Collections.synchronizedList(mutableListOf<String>())
         val ready = CountDownLatch(1)
         val started = CountDownLatch(1)
+        val allWritten = CountDownLatch(1)
+        // Twenty 480-frame packets followed by twenty 240-frame packets must not play
+        // the unused tail of the renderer's reusable PCM array after the packet shrinks.
+        val expectedFrames = 20 * 480 + 20 * 240
         val sink = AndroidMediaSink(context = context, audioFocusEnabled = true, mediaBufferMillis = 60,
             onAudioDiagnostic = { line ->
                 lines += line
                 if (line.startsWith("Audio: ready")) ready.countDown()
                 if (line.contains("first PCM")) started.countDown()
+                if (line.startsWith("audio stats") && line.contains("totalWrittenFrames=$expectedFrames ") &&
+                    line.contains("writeErrors=0 ")) allWritten.countDown()
             })
         val id = AudioStreamId(100, "media")
         val format = AudioFormat(AudioCodecKind.LPCM, 48000, 2, 96)
         try {
             sink.onAudioStarted(id, format, 0)
             assertTrue("AudioTrack initialization: $lines", ready.await(5, TimeUnit.SECONDS))
+            var sample = 0
             repeat(40) { packet ->
-                sink.onAudioRtp(id, format, ByteArray(12 + 1920).apply { this[0] = 0x80.toByte() }, packet * 480)
+                val frames = if (packet < 20) 480 else 240
+                sink.onAudioRtp(id, format, ByteArray(12 + frames * 4).apply { this[0] = 0x80.toByte() }, sample)
+                sample += frames
             }
             assertTrue("PCM write path: $lines", started.await(5, TimeUnit.SECONDS))
-            assertFalse("Renderer failure: $lines", lines.any { it.contains("renderer failed") })
+            assertTrue("PCM packets must write exactly $expectedFrames frames: $lines", allWritten.await(8, TimeUnit.SECONDS))
+            assertFalse("Renderer failure: $lines", synchronized(lines) { lines.any { it.contains("renderer failed") } })
             sink.onMediaAudioFocusChanged(android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
             sink.onMediaAudioFocusChanged(android.media.AudioManager.AUDIOFOCUS_GAIN)
         } finally { sink.onAudioStopped(id); sink.close() }

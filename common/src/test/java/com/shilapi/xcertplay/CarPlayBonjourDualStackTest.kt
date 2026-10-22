@@ -89,8 +89,10 @@ class CarPlayBonjourDualStackTest {
             additionalAddresses = listOf(ipv4)).use { bonjour ->
             val listener = ReflectionHelpers.getField<ServiceListener>(bonjour, "interfaceListener")
             listener.serviceResolved(event)
-            val queue = ReflectionHelpers.getField<java.util.concurrent.LinkedBlockingQueue<*>>(bonjour, "interfaceServices")
-            assertEquals(1, queue.size)
+            val queue = ReflectionHelpers.getField<Any>(bonjour, "interfaceServices")
+            val poll = queue.javaClass.getMethod("poll", Long::class.javaPrimitiveType)
+            assertNotNull(poll.invoke(queue, 0L))
+            assertNull(poll.invoke(queue, 0L))
             verify(dns, never()).getInterface()
         }
     }

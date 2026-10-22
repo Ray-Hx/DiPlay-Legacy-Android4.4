@@ -173,7 +173,10 @@ class CarPlayBonjour(
             ?: throw IOException("Android NSD service is unavailable")
     }
     private val services = LinkedBlockingQueue<NsdServiceInfo>()
-    private val interfaceServices = LinkedBlockingQueue<Pair<CarPlayBonjourEndpoint, InetAddress>>()
+    private val interfaceServices = BonjourProbeQueue<Pair<CarPlayBonjourEndpoint, InetAddress>>(
+        maxAttempts = MAX_PROBE_ATTEMPTS,
+        retryDelayMillis = PROBE_RETRY_DELAY_MILLIS,
+    )
     private val discoveryEvents = LinkedBlockingQueue<CarPlayBonjourEvent.Discovery>(32)
     private val seenServices = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
     private val lifecycleLock = Any()
@@ -471,11 +474,9 @@ class CarPlayBonjour(
             if (interfaceMdnsActive) {
                 try {
                     while (true) emit(discoveryEvents.poll() ?: break)
-                    val (endpoint, address) = interfaceServices.poll(
-                        WORKER_POLL_MILLIS, TimeUnit.MILLISECONDS,
-                    ) ?: continue
-                    emit(CarPlayBonjourEvent.Resolved(endpoint))
-                    probe(endpoint, address)?.let(::emit)
+                    val attempt = interfaceServices.poll(WORKER_POLL_MILLIS) ?: continue
+                    if (attempt.number == 1) emit(CarPlayBonjourEvent.Resolved(attempt.value.first))
+                    probeInterface(attempt)
                 } catch (_: InterruptedException) {
                     return
                 } catch (error: Exception) {
@@ -595,6 +596,31 @@ class CarPlayBonjour(
             Inet6Address.getByAddress(null, address.address, scope)
         } catch (_: Exception) {
             address
+        }
+    }
+
+    private fun probeInterface(
+        attempt: BonjourProbeQueue.Attempt<Pair<CarPlayBonjourEndpoint, InetAddress>>,
+    ) {
+        if (closed) return
+        val (endpoint, address) = attempt.value
+        val failure = try {
+            val statusLine = probeOnce(address, endpoint.port, attempt.number)
+            emit(CarPlayBonjourEvent.Probed(endpoint, attempt.number, statusLine, null))
+            return
+        } catch (error: IOException) {
+            error
+        } catch (error: RuntimeException) {
+            IOException("AirPlay control probe failed", error)
+        }
+        // Yield to other discovered addresses instead of sleeping through seven failures on
+        // this family. Keep the same per-address retry budget and recovery interval.
+        val retryScheduled = synchronized(lifecycleLock) {
+            if (closed) return
+            interfaceServices.retry(attempt)
+        }
+        if (!retryScheduled) {
+            emit(CarPlayBonjourEvent.Probed(endpoint, attempt.number, null, failure))
         }
     }
 
